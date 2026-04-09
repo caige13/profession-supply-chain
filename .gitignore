@@ -53,3 +53,5 @@ SavedVariables/
 
 # Claude plans
 *.plan
+
+.docs/
