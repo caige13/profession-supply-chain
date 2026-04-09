@@ -1,0 +1,62 @@
+## Interface: 120001
+## Title: Profession Supply Chain
+## Notes: Cross-account profession supply chain planner
+## Author: Caige
+## Version: 0.1.0
+## SavedVariables: ProfessionPlannerDB
+## OptionalDeps: TradeSkillMaster, CraftSim
+
+# Utilities
+Util\Table.lua
+Util\Time.lua
+Util\Item.lua
+Util\Serialize.lua
+
+# Core
+Core.lua
+Events.lua
+Config.lua
+SavedVariables.lua
+
+# Scanner
+Scanner\CharacterScanner.lua
+Scanner\InventoryScanner.lua
+Scanner\ProfessionScanner.lua
+Scanner\RecipeScanner.lua
+
+# Sync
+Sync\RateLimiter.lua
+Sync\Chunking.lua
+Sync\Protocol.lua
+Sync\Comm.lua
+
+# Data
+Data\Repository.lua
+Data\Merge.lua
+
+# Planner
+Planner\InventoryIndex.lua
+Planner\RecipeGraph.lua
+Planner\MaxCraftable.lua
+Planner\CraftSimPlanner.lua
+Planner\ResourcePool.lua
+Planner\ResourceAllocator.lua
+Planner\Bottlenecks.lua
+Planner\ActionPlanner.lua
+
+# Adapters
+Adapters\TSMAdapter.lua
+Adapters\CraftSimAdapter.lua
+
+# UI
+UI\MainFrame.lua
+UI\OverviewTab.lua
+UI\AccountsTab.lua
+UI\SimulationTab.lua
+UI\InventoryTab.lua
+UI\BottlenecksTab.lua
+UI\RecipesTab.lua
+UI\ActionsTab.lua
+UI\SettingsTab.lua
+UI\DebugTab.lua
+UI\MailHelper.lua
