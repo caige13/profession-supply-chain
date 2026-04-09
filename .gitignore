@@ -39,3 +39,17 @@ luac.out
 *.x86_64
 *.hex
 
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# WoW SavedVariables (contains player data)
+SavedVariables/
+
+# Claude plans
+*.plan
