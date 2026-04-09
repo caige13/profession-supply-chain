@@ -13,6 +13,7 @@ local TAB_DEFINITIONS = {
     { name = "Accounts",     key = "accounts",     module = "AccountsTab" },
     { name = "Bottlenecks",  key = "bottlenecks",  module = "BottlenecksTab" },
     { name = "Actions",      key = "actions",      module = "ActionsTab" },
+    { name = "Employees",    key = "employees",    module = "EmployeesTab" },
     { name = "Settings",     key = "settings",     module = "SettingsTab" },
     { name = "Debug",        key = "debug",        module = "DebugTab" },
 }
@@ -24,6 +25,10 @@ function ns.MainFrame.Initialize()
     end, "MainFrame")
 
     ns.Events.Register("PSC_SIMULATION_COMPLETE", function()
+        ns.MainFrame.RefreshActiveTab()
+    end, "MainFrame")
+
+    ns.Events.Register("PSC_MAIL_LOGGED", function()
         ns.MainFrame.RefreshActiveTab()
     end, "MainFrame")
 end
@@ -50,7 +55,7 @@ local function createMainFrame()
     frame.TitleText:SetText("Profession Supply Chain v" .. ns.VERSION)
 
     -- Tab buttons
-    local tabButtonWidth = 100
+    local tabButtonWidth = 90
     local tabStartX = 10
 
     for i, tabDef in ipairs(TAB_DEFINITIONS) do

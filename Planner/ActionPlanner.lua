@@ -9,62 +9,129 @@ local ACTION_CRAFT = "craft"
 function ns.ActionPlanner.GeneratePlan()
     local actions = {}
     local optimized = ns.CraftSimPlanner.OptimizeWatchedRecipes()
-    local allocations = ns.ResourceAllocator.Allocate(optimized)
+    local result = ns.ResourceAllocator.Allocate(optimized)
 
-    if #allocations == 0 then
+    if not result or not result.plan or #result.plan == 0 then
         return actions
     end
 
-    -- Merge all reagent needs across allocations, then generate transfers
-    local transferNeeds = {}  -- { [itemID] = { crafter = charKey, totalNeeded = N } }
+    -- Merge all reagent transfer needs across plan entries
+    local transferNeeds = {}  -- { ["itemID:crafter"] = { itemID, crafter, totalNeeded } }
 
-    for _, alloc in ipairs(allocations) do
-        local crafter = alloc.crafters and alloc.crafters[1]
-        if not crafter then
-            -- Skip recipes with no known crafter
-        else
-            -- Accumulate reagent needs for this crafter
-            for _, r in ipairs(alloc.reagents) do
-                local itemID = r.itemID or r.baseItemID
-                if itemID then
-                    local needed = (r.quantity or r.requiredTotal or 0) * alloc.quantity
-                    local key = itemID .. ":" .. crafter
-                    if not transferNeeds[key] then
-                        transferNeeds[key] = {
-                            itemID = itemID,
-                            crafter = crafter,
-                            totalNeeded = 0,
-                            qualityID = r.qualityID,
-                        }
+    local function addTransferNeed(itemID, crafter, qty)
+        if not itemID or not crafter or qty <= 0 then return end
+        local key = itemID .. ":" .. crafter
+        if not transferNeeds[key] then
+            transferNeeds[key] = { itemID = itemID, crafter = crafter, totalNeeded = 0 }
+        end
+        transferNeeds[key].totalNeeded = transferNeeds[key].totalNeeded + qty
+    end
+
+    -- Build a lookup of watched recipe costs from the optimizer inputs
+    -- (we need per-craft reagent quantities for transfer calculation)
+    local watchedCosts = {}  -- { [recipeId] = { [itemID] = qtyPerCraft } }
+    for _, entry in ipairs(result.plan) do
+        if entry.type == "watched" then
+            -- Reconstruct costs from CraftSimPlanner data
+            for _, recipe in ipairs(optimized) do
+                if recipe.recipeID == entry.recipeId then
+                    local costs = {}
+                    if recipe.reagents then
+                        for _, r in ipairs(recipe.reagents) do
+                            local baseID = r.baseItemID or r.itemID
+                            if baseID and not ns.ItemUtil.IsVendorItem(baseID) then
+                                costs[baseID] = (costs[baseID] or 0) + (r.requiredTotal or r.quantity or 0)
+                            end
+                        end
                     end
-                    transferNeeds[key].totalNeeded = transferNeeds[key].totalNeeded + needed
+                    watchedCosts[entry.recipeId] = costs
+                    break
+                end
+            end
+        end
+    end
+
+    for _, entry in ipairs(result.plan) do
+        if entry.type == "watched" and entry.crafts > 0 then
+            local crafter = entry.crafter
+            local crafterName = crafter and (crafter:match("^(.+)-") or crafter) or "?"
+
+            -- Support craft actions (emitted before watched craft)
+            if entry.supportPlan then
+                for _, support in pairs(entry.supportPlan) do
+                    if support.batches and support.batches > 0 then
+                        local supportCrafter = support.crafter
+                        local supportCrafterName = supportCrafter
+                            and (supportCrafter:match("^(.+)-") or supportCrafter) or "?"
+
+                        local supportRecipeData = ns.RecipeGraph.GetRecipe(support.recipeId)
+                        local supportOutputItemID = supportRecipeData and supportRecipeData.outputItemID
+
+                        actions[#actions + 1] = {
+                            actionType = ACTION_CRAFT,
+                            source = supportCrafter,
+                            destination = nil,
+                            itemID = supportOutputItemID or support.recipeId,
+                            itemName = ns.ItemUtil.GetIconString(supportOutputItemID, 14) ..
+                                " " .. (support.recipeName or "?"),
+                            recipeID = support.recipeId,
+                            recipeName = support.recipeName,
+                            quantity = support.batches,
+                            qualityID = nil,
+                            isSupport = true,
+                            note = string.format("Craft %d %s on %s (intermediate)",
+                                support.batches, support.recipeName or "?", supportCrafterName),
+                        }
+                        if supportRecipeData and supportRecipeData.reagents and supportCrafter then
+                            for _, r in ipairs(supportRecipeData.reagents) do
+                                local baseID = r.itemID
+                                if baseID and not ns.ItemUtil.IsVendorItem(baseID) then
+                                    addTransferNeed(baseID, supportCrafter, (r.quantity or 0) * support.batches)
+                                end
+                            end
+                        end
+
+                        -- If support crafter differs from watched crafter,
+                        -- the intermediate output needs to be transferred
+                        if supportCrafter and crafter and supportCrafter ~= crafter then
+                            if supportOutputItemID then
+                                local outputQty = (supportRecipeData.outputQuantity or 1) * support.batches
+                                addTransferNeed(supportOutputItemID, crafter, outputQty)
+                            end
+                        end
+                    end
                 end
             end
 
-            -- Craft action
-            local qIcon = alloc.qualityTarget and alloc.qualityTarget > 0
-                and (" " .. ns.ItemUtil.GetQualityIcon(alloc.qualityTarget, 12)) or ""
-            local concLabel = alloc.useConcentration and " +Conc" or ""
-            local profitStr = ""
-            if alloc.totalProfit ~= 0 then
-                profitStr = string.format(" (est. profit: %s)",
-                    GetCoinTextureString(math.abs(alloc.totalProfit)))
+            -- Watched recipe craft action
+            local concLabel = ""
+            if entry.concentratedCrafts and entry.concentratedCrafts > 0 then
+                concLabel = string.format(" (%d with Concentration)", entry.concentratedCrafts)
             end
 
             actions[#actions + 1] = {
                 actionType = ACTION_CRAFT,
                 source = crafter,
                 destination = nil,
-                itemID = alloc.outputItemID or alloc.recipeID,
-                itemName = ns.ItemUtil.GetIconString(alloc.outputItemID, 14) ..
-                    " " .. (alloc.recipeName or "?") .. qIcon .. concLabel,
-                recipeID = alloc.recipeID,
-                recipeName = alloc.recipeName,
-                quantity = alloc.quantity,
-                qualityID = alloc.qualityTarget,
-                note = string.format("Suggested: Craft %d %s%s%s on %s%s",
-                    alloc.quantity, alloc.recipeName or "?", qIcon, concLabel, crafter, profitStr),
+                itemID = entry.outputItemID or entry.recipeId,
+                itemName = ns.ItemUtil.GetIconString(entry.outputItemID, 14) ..
+                    " " .. (entry.recipeName or "?"),
+                recipeID = entry.recipeId,
+                recipeName = entry.recipeName,
+                quantity = entry.crafts,
+                qualityID = nil,
+                concentratedCrafts = entry.concentratedCrafts or 0,
+                note = string.format("Craft %d %s on %s%s",
+                    entry.crafts, entry.recipeName or "?", crafterName, concLabel),
             }
+
+            -- Transfer needs for watched recipe reagents
+            local costs = watchedCosts[entry.recipeId]
+            if costs and crafter then
+                for itemID, qtyPerCraft in pairs(costs) do
+                    addTransferNeed(itemID, crafter, qtyPerCraft * entry.crafts)
+                end
+            end
         end
     end
 
@@ -75,12 +142,10 @@ function ns.ActionPlanner.GeneratePlan()
 
         if deficit > 0 then
             local breakdown = ns.InventoryIndex.GetBreakdown(need.itemID)
-            if breakdown.byCharacter then
+            if breakdown and breakdown.byCharacter then
                 for sourceChar, qty in pairs(breakdown.byCharacter) do
                     if sourceChar ~= need.crafter and qty > 0 and deficit > 0 then
                         local sendQty = math.min(qty, deficit)
-                        local qualityIcon = need.qualityID and need.qualityID > 0
-                            and (" " .. ns.ItemUtil.GetQualityIcon(need.qualityID, 12)) or ""
 
                         actions[#actions + 1] = {
                             actionType = ACTION_TRANSFER,
@@ -88,11 +153,13 @@ function ns.ActionPlanner.GeneratePlan()
                             destination = need.crafter,
                             itemID = need.itemID,
                             itemName = ns.ItemUtil.GetIconString(need.itemID, 14) ..
-                                " " .. ns.ItemUtil.GetItemName(need.itemID) .. qualityIcon,
+                                " " .. ns.ItemUtil.GetItemName(need.itemID),
                             quantity = sendQty,
-                            qualityID = need.qualityID,
-                            note = string.format("Suggested: Send %d %s from %s to %s",
-                                sendQty, ns.ItemUtil.GetItemName(need.itemID), sourceChar, need.crafter),
+                            qualityID = nil,
+                            note = string.format("Send %d %s from %s to %s",
+                                sendQty, ns.ItemUtil.GetItemName(need.itemID),
+                                sourceChar:match("^(.+)-") or sourceChar,
+                                need.crafter:match("^(.+)-") or need.crafter),
                         }
                         deficit = deficit - sendQty
                     end
@@ -101,10 +168,16 @@ function ns.ActionPlanner.GeneratePlan()
         end
     end
 
-    -- Sort: transfers first, then crafts
+    -- Sort: transfers first, then support crafts, then watched crafts
     table.sort(actions, function(a, b)
         if a.actionType ~= b.actionType then
             return a.actionType == ACTION_TRANSFER
+        end
+        -- Within crafts: support first, then watched
+        if a.actionType == ACTION_CRAFT and b.actionType == ACTION_CRAFT then
+            if (a.isSupport or false) ~= (b.isSupport or false) then
+                return a.isSupport or false
+            end
         end
         return (a.note or "") < (b.note or "")
     end)

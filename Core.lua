@@ -7,12 +7,23 @@ ns.PREFIX = "PSC"
 
 -- Debug logging
 ns.debug = false
+ns.debugLog = {}
+local DEBUG_LOG_MAX = 200
 
 function ns.Debug(...)
     if ns.debug then
         local msg = string.format(...)
         print("|cff88ccff[PSC]|r " .. msg)
+        -- Buffer for Debug tab
+        ns.debugLog[#ns.debugLog + 1] = date("%H:%M:%S") .. " " .. msg
+        if #ns.debugLog > DEBUG_LOG_MAX then
+            table.remove(ns.debugLog, 1)
+        end
     end
+end
+
+function ns.ClearDebugLog()
+    wipe(ns.debugLog)
 end
 
 function ns.Print(...)
@@ -50,6 +61,7 @@ initFrame:SetScript("OnEvent", function(self, event, addonName)
     ns.TSMAdapter.Initialize()
     ns.CraftSimAdapter.Initialize()
     ns.MainFrame.Initialize()
+    ns.ProfessionOverlay.Initialize()
     ns.MailHelper.Initialize()
 
     ns.Print("v%s loaded. Type /psc to open.", ns.VERSION)

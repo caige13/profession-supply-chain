@@ -57,6 +57,8 @@ UI\InventoryTab.lua
 UI\BottlenecksTab.lua
 UI\RecipesTab.lua
 UI\ActionsTab.lua
+UI\EmployeesTab.lua
 UI\SettingsTab.lua
 UI\DebugTab.lua
+UI\ProfessionOverlay.lua
 UI\MailHelper.lua

@@ -60,27 +60,75 @@ function ns.ActionsTab.Refresh()
                 "to start tracking recipes in the supply chain planner."
             )
         else
-            -- Recipes are watched but no actions generated — explain why
-            local lines = { string.format("%d watched recipe(s), but no actions to suggest.\n", watchedCount) }
-            for recipeID in pairs(ns.DB.watchedRecipes) do
-                local recipe = ns.RecipeGraph.GetRecipe(recipeID)
-                if not recipe then
-                    lines[#lines + 1] = string.format("  |cffff4444Recipe #%d:|r Not in recipe graph — open the profession window to scan it.", recipeID)
-                else
-                    local icon = ns.ItemUtil.GetIconString(recipe.outputItemID, 14)
-                    local crafters = ns.Merge.GetRecipeOwners(recipeID)
-                    local result = ns.MaxCraftable.Calculate(recipeID)
-                    if #crafters == 0 then
-                        lines[#lines + 1] = string.format("  %s |cffff4444%s:|r No character knows this recipe.", icon, recipe.recipeName or "?")
-                    elseif not recipe.reagents or #recipe.reagents == 0 then
-                        lines[#lines + 1] = string.format("  %s |cffffff00%s:|r No reagent data — reopen profession to rescan.", icon, recipe.recipeName or "?")
-                    elseif result.maxCraftable > 0 then
-                        lines[#lines + 1] = string.format("  %s |cff00cc66%s:|r Can craft %d — all materials already on crafter.", icon, recipe.recipeName or "?", result.maxCraftable)
-                    else
-                        lines[#lines + 1] = string.format("  %s |cffffff00%s:|r Missing materials, no transfers possible.", icon, recipe.recipeName or "?")
+            local lines = {}
+            local optimized = ns.CraftSimPlanner.OptimizeWatchedRecipes()
+            local pool = ns.ResourcePool.Build(optimized)
+            local deficits = ns.ResourcePool.GetSortedDeficits(pool)
+
+            -- Analyze the situation
+            local hasMaterials = #deficits == 0
+            local hasAnyProfitable = false
+            local hasConcentrationProfitable = false
+            local missingMaterials = #deficits > 0
+
+            for _, recipe in ipairs(optimized) do
+                if (recipe.profit or 0) > 0 then
+                    hasAnyProfitable = true
+                end
+                -- Check concentration variants in quality results
+                if recipe.qualityResults then
+                    for _, qr in ipairs(recipe.qualityResults) do
+                        if qr.useConcentration and (qr.profit or 0) > 0 then
+                            hasConcentrationProfitable = true
+                        end
+                        if (qr.profit or 0) > 0 then
+                            hasAnyProfitable = true
+                        end
                     end
                 end
             end
+
+            -- CASE 1: Missing materials
+            if missingMaterials then
+                lines[#lines + 1] = "|cffffd100No actions available — missing materials.|r"
+                lines[#lines + 1] = ""
+                lines[#lines + 1] = "The following resources are needed to craft watched recipes:"
+                lines[#lines + 1] = ""
+                for i, entry in ipairs(deficits) do
+                    if i > 10 then break end
+                    local itemIcon = ns.ItemUtil.GetIconString(entry.baseItemID, 14)
+                    lines[#lines + 1] = string.format("  %s %s — need %d, have %d |cffff4444(short %d)|r",
+                        itemIcon, entry.name or "?",
+                        entry.totalDemand, entry.totalAvailable, entry.deficit)
+                end
+
+            -- CASE 2: Have materials but nothing profitable
+            elseif not hasAnyProfitable then
+                lines[#lines + 1] = "|cffffd100No profitable crafts available.|r"
+                lines[#lines + 1] = ""
+                lines[#lines + 1] = "All watched recipes cost more to craft than the output sells for"
+                lines[#lines + 1] = "at current market prices."
+                lines[#lines + 1] = ""
+                lines[#lines + 1] = "Consider selling raw materials on the auction house instead."
+
+            -- CASE 3: Concentration makes it profitable but base doesn't
+            elseif hasConcentrationProfitable and not hasAnyProfitable then
+                lines[#lines + 1] = "|cffffd100Crafting is only profitable with concentration.|r"
+                lines[#lines + 1] = ""
+                lines[#lines + 1] = "Without concentration, all recipes are a loss."
+                lines[#lines + 1] = "Use the Simulation tab to see which quality + concentration"
+                lines[#lines + 1] = "combinations are profitable, then craft those manually."
+
+            -- CASE 4: Something else
+            else
+                lines[#lines + 1] = "|cffffd100No actions generated.|r"
+                lines[#lines + 1] = ""
+                lines[#lines + 1] = "Profitable recipes exist but resources could not be allocated."
+                lines[#lines + 1] = "Check the Simulation tab for details."
+            end
+
+            noActionsLabel:SetText(table.concat(lines, "\n"))
+
             noActionsLabel:SetText(table.concat(lines, "\n"))
         end
         noActionsLabel:Show()
@@ -95,6 +143,51 @@ function ns.ActionsTab.Refresh()
         y = y - 22
 
         if i >= 30 then break end  -- limit displayed rows
+    end
+
+    -- Mail log section
+    ns.ActionsTab.RenderMailLog(contentFrame, y - 15)
+end
+
+function ns.ActionsTab.RenderMailLog(parent, startY)
+    if not ns.DB.mailLog or #ns.DB.mailLog == 0 then return end
+
+    -- Show last 5 entries
+    local recentCount = math.min(#ns.DB.mailLog, 5)
+
+    local header = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    header:SetPoint("TOPLEFT", parent, "TOPLEFT", 10, startY)
+    header:SetText("|cffffd100Recent Mail|r")
+    actionRows[#actionRows + 1] = header
+
+    local y = startY - 16
+    for i = #ns.DB.mailLog, math.max(1, #ns.DB.mailLog - recentCount + 1), -1 do
+        local entry = ns.DB.mailLog[i]
+        if entry then
+            local timeStr = entry.timestamp and ns.TimeUtil.FormatTimestamp(entry.timestamp) or "?"
+            local senderName = entry.sender and (entry.sender:match("^(.+)-") or entry.sender) or "?"
+            local recipientName = entry.recipient or "?"
+
+            local itemParts = {}
+            if entry.items then
+                for _, item in ipairs(entry.items) do
+                    local name = item.itemName or ns.ItemUtil.GetItemName(item.itemID)
+                    -- Strip color codes and icons for compact display
+                    name = name:gsub("|T.-|t", ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):trim()
+                    itemParts[#itemParts + 1] = string.format("%dx %s", item.quantity or 0, name)
+                end
+            end
+            local itemStr = table.concat(itemParts, ", ")
+
+            local logLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            logLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 10, y)
+            logLabel:SetWidth(750)
+            logLabel:SetJustifyH("LEFT")
+            logLabel:SetText(string.format("|cff888888%s|r  %s |cff4488ff→|r %s: %s",
+                timeStr, senderName, recipientName, itemStr))
+            actionRows[#actionRows + 1] = logLabel
+            y = y - 14
+        end
     end
 end
 
@@ -146,6 +239,52 @@ function ns.ActionsTab.CreateActionRow(parent, y, action, index)
     qtyText:SetWidth(40)
     qtyText:SetJustifyH("RIGHT")
     qtyText:SetText("|cffffd100" .. tostring(action.quantity or 0) .. "|r")
+
+    -- Concentration indicator (glowing icon after qty)
+    if action.concentratedCrafts and action.concentratedCrafts > 0 then
+        local concFrame = CreateFrame("Frame", nil, row)
+        concFrame:SetSize(20, 20)
+        concFrame:SetPoint("LEFT", qtyText, "RIGHT", 8, 2)
+
+        local concIcon = concFrame:CreateTexture(nil, "ARTWORK")
+        concIcon:SetSize(16, 16)
+        concIcon:SetPoint("CENTER")
+        concIcon:SetAtlas("Professions-Icon-Concentration")
+
+        -- Pulsing glow behind the icon
+        local glow = concFrame:CreateTexture(nil, "BACKGROUND")
+        glow:SetSize(24, 24)
+        glow:SetPoint("CENTER")
+        glow:SetAtlas("Professions-Icon-Concentration")
+        glow:SetBlendMode("ADD")
+        glow:SetAlpha(0)
+
+        local ag = concFrame:CreateAnimationGroup()
+        local fadeIn = ag:CreateAnimation("Alpha")
+        fadeIn:SetFromAlpha(0)
+        fadeIn:SetToAlpha(0.5)
+        fadeIn:SetDuration(0.6)
+        fadeIn:SetOrder(1)
+        local fadeOut = ag:CreateAnimation("Alpha")
+        fadeOut:SetFromAlpha(0.5)
+        fadeOut:SetToAlpha(0)
+        fadeOut:SetDuration(0.6)
+        fadeOut:SetOrder(2)
+        ag:SetLooping("REPEAT")
+
+        glow:SetAnimationGroup(ag)
+        ag:Play()
+
+        -- Tooltip
+        concFrame:EnableMouse(true)
+        concFrame:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(string.format("Use Concentration on %d of %d crafts",
+                action.concentratedCrafts, action.quantity or 0), 1, 0.5, 0)
+            GameTooltip:Show()
+        end)
+        concFrame:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
 
     -- Tooltip with full note
     row:EnableMouse(true)

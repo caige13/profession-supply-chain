@@ -22,6 +22,7 @@ local DB_DEFAULTS = {
         professionOwners = {},
     },
     watchedRecipes = {},
+    mailLog = {},
     syncState = {
         peers = {},
         lastBroadcast = 0,

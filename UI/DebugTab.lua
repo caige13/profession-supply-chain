@@ -130,6 +130,17 @@ function ns.DebugTab.Refresh()
     lines[#lines + 1] = string.format("  Recipes: %d", ns.TableUtil.Count(ns.DB.mergedIndex.recipeOwners))
     lines[#lines + 1] = string.format("  Professions: %d", ns.TableUtil.Count(ns.DB.mergedIndex.professionOwners))
     lines[#lines + 1] = string.format("  Watched recipes: %d", ns.TableUtil.Count(ns.DB.watchedRecipes))
+    lines[#lines + 1] = ""
+
+    -- Recent debug log (copyable)
+    lines[#lines + 1] = "|cffffd100=== Recent Debug Log ===|r"
+    if ns.debugLog and #ns.debugLog > 0 then
+        for _, logLine in ipairs(ns.debugLog) do
+            lines[#lines + 1] = logLine
+        end
+    else
+        lines[#lines + 1] = "  (no log entries — enable debug with /psc debug, then open Actions tab)"
+    end
 
     debugText:SetText(table.concat(lines, "\n"))
 end

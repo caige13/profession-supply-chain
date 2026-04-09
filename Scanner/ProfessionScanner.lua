@@ -158,101 +158,209 @@ end
 
 -- Scan profession specialization tree (requires profession UI to be open)
 function ns.ProfessionScanner.ScanSpecializations(profEntry, profInfo)
-    if not C_ProfSpecs or not profInfo then return end
-
-    local skillLineID = profInfo.professionID
-    if not skillLineID then return end
-
-    -- Check if this profession supports specializations
-    local ok, hasSpecs = pcall(function()
-        return C_ProfSpecs.SkillLineHasSpecialization(skillLineID)
-    end)
-    if not ok or not hasSpecs then
-        ns.Debug("No specializations for %s", profInfo.professionName or "?")
+    if not C_ProfSpecs then
+        ns.Debug("ScanSpecs: C_ProfSpecs API not available")
+        return
+    end
+    if not profInfo then
+        ns.Debug("ScanSpecs: no profInfo")
         return
     end
 
-    -- Get the trait config for this profession
+    local baseSkillLineID = profInfo.professionID
+    ns.Debug("ScanSpecs: base professionID=%s parentProfessionID=%s name=%s",
+        tostring(baseSkillLineID), tostring(profInfo.parentProfessionID), profInfo.professionName or "?")
+
+    -- Find the expansion-specific skill line that has specializations.
+    -- GetBaseProfessionInfo() returns the parent (e.g., "Alchemy" 171).
+    -- Specializations live on the expansion child (e.g., "Dragonflight Alchemy" 2823).
+    -- Try child professions first, then fall back to the base ID.
+    local skillLineID = nil
     local configID = nil
-    local okConfig
-    okConfig, configID = pcall(function()
-        return C_ProfSpecs.GetConfigIDForSkillLine(skillLineID)
+
+    -- Try expansion-specific child professions
+    local okChildren, childInfos = pcall(function()
+        return C_TradeSkillUI.GetChildProfessionInfos()
     end)
-    if not okConfig or not configID then return end
+    ns.Debug("ScanSpecs: GetChildProfessionInfos() ok=%s count=%s",
+        tostring(okChildren), childInfos and tostring(#childInfos) or "nil")
+
+    if okChildren and childInfos then
+        for _, child in ipairs(childInfos) do
+            local childID = child.professionID
+            ns.Debug("ScanSpecs: checking child %s (%s) expansion=%s",
+                tostring(childID), child.professionName or "?", child.expansionName or "?")
+            if childID then
+                local okHas, hasSpecs = pcall(function()
+                    return C_ProfSpecs.SkillLineHasSpecialization(childID)
+                end)
+                ns.Debug("ScanSpecs: SkillLineHasSpecialization(%s) ok=%s result=%s",
+                    tostring(childID), tostring(okHas), tostring(hasSpecs))
+                if okHas and hasSpecs then
+                    local okCfg, cfgID = pcall(function()
+                        return C_ProfSpecs.GetConfigIDForSkillLine(childID)
+                    end)
+                    if okCfg and cfgID then
+                        skillLineID = childID
+                        configID = cfgID
+                        ns.Debug("ScanSpecs: found specs on child %s configID=%s", tostring(childID), tostring(cfgID))
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback: try the base skill line ID
+    if not skillLineID and baseSkillLineID then
+        local okHas, hasSpecs = pcall(function()
+            return C_ProfSpecs.SkillLineHasSpecialization(baseSkillLineID)
+        end)
+        if okHas and hasSpecs then
+            local okCfg, cfgID = pcall(function()
+                return C_ProfSpecs.GetConfigIDForSkillLine(baseSkillLineID)
+            end)
+            if okCfg and cfgID then
+                skillLineID = baseSkillLineID
+                configID = cfgID
+                ns.Debug("ScanSpecs: found specs on base %s configID=%s", tostring(baseSkillLineID), tostring(cfgID))
+            end
+        end
+    end
+
+    if not skillLineID or not configID then
+        ns.Debug("ScanSpecs: no specializations found for %s", profInfo.professionName or "?")
+        return
+    end
 
     -- Get specialization tabs
     local tabIDs = nil
-    local okTabs
-    okTabs, tabIDs = pcall(function()
-        return C_ProfSpecs.GetSpecTabIDs()
+    local okTabs, result = pcall(function()
+        return C_ProfSpecs.GetSpecTabIDsForSkillLine(skillLineID)
     end)
-    if not okTabs or not tabIDs then return end
+    if okTabs and type(result) == "table" then
+        tabIDs = result
+        ns.Debug("ScanSpecs: GetSpecTabIDsForSkillLine(%s) returned %d tabs", tostring(skillLineID), #tabIDs)
+    else
+        ns.Debug("ScanSpecs: GetSpecTabIDsForSkillLine(%s) failed: %s", tostring(skillLineID), tostring(result))
+        return
+    end
 
     profEntry.specializations = {}
 
     for _, tabID in ipairs(tabIDs) do
-        local tabInfo = C_ProfSpecs.GetSpecTabInfo(tabID)
-        if tabInfo then
-            local spec = {
-                tabID = tabID,
-                name = tabInfo.name or ("Spec " .. tabID),
-                description = tabInfo.description,
-                pointsSpent = 0,
-                maxPoints = 0,
-                state = nil,
-                children = {},
-            }
+        -- Try multiple ways to get tab info
+        local tabName = nil
+        local tabDesc = nil
 
-            -- Get state (locked, unlocked, etc.)
-            local okState, state = pcall(function()
-                return C_ProfSpecs.GetStateForTab(skillLineID, tabID)
-            end)
-            if okState then
-                spec.state = state
-            end
+        local okInfo, tabInfo = pcall(function()
+            return C_ProfSpecs.GetSpecTabInfo(tabID)
+        end)
+        if okInfo and tabInfo then
+            tabName = tabInfo.name
+            tabDesc = tabInfo.description
+        end
 
-            -- Get the root node for this tab and walk the tree for points
+        -- Fallback: try to get name from the root node of this tab
+        if not tabName or tabName == "" then
             local okRoot, rootNodeID = pcall(function()
                 return C_ProfSpecs.GetRootPathForTab(tabID)
             end)
-
             if okRoot and rootNodeID then
-                ns.ProfessionScanner.ScanSpecNode(configID, rootNodeID, spec, 0)
-            end
-
-            -- Also try getting all tab children for point counts
-            local okChildren, tabChildren = pcall(function()
-                return C_ProfSpecs.GetChildrenForPath(tabID)
-            end)
-
-            if okChildren and tabChildren then
-                for _, childID in ipairs(tabChildren) do
-                    local childInfo = C_ProfSpecs.GetSpecTabInfo(childID)
-                    if childInfo then
-                        local child = {
-                            tabID = childID,
-                            name = childInfo.name or ("Spec " .. childID),
-                            pointsSpent = 0,
-                            maxPoints = 0,
-                        }
-
-                        -- Get points for this child path
-                        local okChildRoot, childRootNode = pcall(function()
-                            return C_ProfSpecs.GetRootPathForTab(childID)
+                local okNode, nodeInfo = pcall(function()
+                    return C_Traits.GetNodeInfo(configID, rootNodeID)
+                end)
+                if okNode and nodeInfo then
+                    -- Try to get name from entry info
+                    if nodeInfo.entryIDs and #nodeInfo.entryIDs > 0 then
+                        local okEntry, entryInfo = pcall(function()
+                            return C_Traits.GetEntryInfo(configID, nodeInfo.entryIDs[1])
                         end)
-                        if okChildRoot and childRootNode then
-                            ns.ProfessionScanner.ScanSpecNode(configID, childRootNode, child, 0)
+                        if okEntry and entryInfo and entryInfo.definitionID then
+                            local okDef, defInfo = pcall(function()
+                                return C_Traits.GetDefinitionInfo(entryInfo.definitionID)
+                            end)
+                            if okDef and defInfo then
+                                -- Get spell/override name
+                                if defInfo.overrideName and defInfo.overrideName ~= "" then
+                                    tabName = defInfo.overrideName
+                                elseif defInfo.spellID then
+                                    local spellName = C_Spell.GetSpellName(defInfo.spellID)
+                                    if spellName and spellName ~= "" then
+                                        tabName = spellName
+                                    end
+                                end
+                            end
                         end
-
-                        spec.children[#spec.children + 1] = child
-                        spec.pointsSpent = spec.pointsSpent + child.pointsSpent
                     end
                 end
             end
-
-            profEntry.specializations[#profEntry.specializations + 1] = spec
-            ns.Debug("  Spec: %s — %d points", spec.name, spec.pointsSpent)
         end
+
+        local spec = {
+            tabID = tabID,
+            name = tabName or ("Spec " .. tabID),
+            description = tabDesc,
+            pointsSpent = 0,
+            maxPoints = 0,
+            state = nil,
+            children = {},
+        }
+
+        -- Get state (locked, unlocked, etc.)
+        local okState, state = pcall(function()
+            return C_ProfSpecs.GetStateForTab(skillLineID, tabID)
+        end)
+        if okState then
+            spec.state = state
+        end
+
+        -- Get the root node for this tab and walk the tree for points
+        local okRoot2, rootNodeID2 = pcall(function()
+            return C_ProfSpecs.GetRootPathForTab(tabID)
+        end)
+        if okRoot2 and rootNodeID2 then
+            ns.ProfessionScanner.ScanSpecNode(configID, rootNodeID2, spec, 0)
+        end
+
+        -- Also try getting all tab children for point counts
+        local okChildren, tabChildren = pcall(function()
+            return C_ProfSpecs.GetChildrenForPath(tabID)
+        end)
+
+        if okChildren and type(tabChildren) == "table" then
+            for _, childID in ipairs(tabChildren) do
+                local childName = nil
+                local okCInfo, childInfo = pcall(function()
+                    return C_ProfSpecs.GetSpecTabInfo(childID)
+                end)
+                if okCInfo and childInfo then
+                    childName = childInfo.name
+                end
+
+                local child = {
+                    tabID = childID,
+                    name = childName or ("Spec " .. childID),
+                    pointsSpent = 0,
+                    maxPoints = 0,
+                }
+
+                -- Get points for this child path
+                local okChildRoot, childRootNode = pcall(function()
+                    return C_ProfSpecs.GetRootPathForTab(childID)
+                end)
+                if okChildRoot and childRootNode then
+                    ns.ProfessionScanner.ScanSpecNode(configID, childRootNode, child, 0)
+                end
+
+                spec.children[#spec.children + 1] = child
+                spec.pointsSpent = spec.pointsSpent + child.pointsSpent
+            end
+        end
+
+        profEntry.specializations[#profEntry.specializations + 1] = spec
+        ns.Debug("  Spec: %s — %d/%d points (%d children)",
+            spec.name, spec.pointsSpent, spec.maxPoints, #spec.children)
     end
 end
 

@@ -6,6 +6,7 @@ local fillButton = nil
 local statusText = nil
 local mailQueue = {}       -- list of { itemID, quantity } remaining to send
 local currentBatch = {}    -- items being attached in current mail
+local pendingLogItems = {} -- items attached in current fill sequence for logging
 local currentRecipient = nil
 local mailIndex = 0        -- which mail we're on (1/3, 2/3, etc.)
 local totalMails = 0
@@ -162,8 +163,15 @@ function ns.MailHelper.FillNextBatch()
 
         if attached > 0 then
             totalAttached = totalAttached + attached
+            -- Track what was attached for mail log
+            local sentQty = item.quantity
+            pendingLogItems[#pendingLogItems + 1] = {
+                itemID = item.itemID,
+                itemName = item.itemName,
+                quantity = sentQty,
+            }
             -- AttachItemFromBags returns stacks attached, estimate quantity sent
-            item.quantity = item.quantity - (item.quantity)  -- assume all sent for now
+            item.quantity = item.quantity - sentQty  -- assume all sent for now
             if item.quantity <= 0 then
                 table.remove(mailQueue, i)
             end
@@ -230,6 +238,25 @@ function ns.MailHelper.AttachItemFromBags(itemID, maxQuantity, maxSlots)
 end
 
 function ns.MailHelper.OnMailSent()
+    -- Log this mail send
+    if currentRecipient and #pendingLogItems > 0 then
+        local charKey = ns.CharacterScanner.GetCurrentCharacterKey()
+        ns.MailHelper.RecordMailLog(charKey, currentRecipient, pendingLogItems)
+
+        -- Optimistically credit recipient's inventory so optimizer still sees materials
+        local recipientKey = ns.MailHelper.FindCharacterKey(currentRecipient)
+        if recipientKey then
+            for _, item in ipairs(pendingLogItems) do
+                ns.InventoryIndex.AdjustPendingMail(item.itemID, recipientKey, item.quantity)
+            end
+            ns.ResourceAllocator.InvalidateCache()
+            ns.CraftSimPlanner.InvalidateCache()
+            ns.Debug("MailHelper: optimistic inventory update for %s (%d items)", recipientKey, #pendingLogItems)
+        end
+
+        wipe(pendingLogItems)
+    end
+
     if #mailQueue > 0 then
         -- Wait a moment for bags to update, then fill next batch
         C_Timer.After(0.5, function()
@@ -243,9 +270,33 @@ function ns.MailHelper.OnMailSent()
     end
 end
 
+function ns.MailHelper.RecordMailLog(sender, recipient, items)
+    if not ns.DB.mailLog then ns.DB.mailLog = {} end
+    local entry = {
+        timestamp = ns.TimeUtil.Now(),
+        sender = sender or "Unknown",
+        recipient = recipient or "Unknown",
+        items = {},
+    }
+    for _, item in ipairs(items) do
+        entry.items[#entry.items + 1] = {
+            itemID = item.itemID,
+            itemName = item.itemName or "",
+            quantity = item.quantity or 0,
+        }
+    end
+    ns.DB.mailLog[#ns.DB.mailLog + 1] = entry
+    -- Cap at 200 entries
+    while #ns.DB.mailLog > 200 do
+        table.remove(ns.DB.mailLog, 1)
+    end
+    ns.Events.Fire("PSC_MAIL_LOGGED", entry)
+end
+
 function ns.MailHelper.ResetState()
     wipe(mailQueue)
     wipe(currentBatch)
+    wipe(pendingLogItems)
     currentRecipient = nil
     mailIndex = 0
     totalMails = 0
@@ -283,6 +334,34 @@ function ns.MailHelper.GetTransfersForRecipient(recipientName)
     end
 
     return transfers
+end
+
+-- Resolve a bare character name to a full "Name-Realm" key by searching known characters
+function ns.MailHelper.FindCharacterKey(recipientName)
+    if not recipientName or recipientName == "" then return nil end
+    local lowerName = recipientName:lower()
+
+    -- Check local characters
+    for charKey in pairs(ns.DB.localScans.characters) do
+        local name = charKey:match("^(.+)-")
+        if name and name:lower() == lowerName then
+            return charKey
+        end
+    end
+
+    -- Check network characters
+    for _, snapshot in pairs(ns.DB.networkSnapshots) do
+        if snapshot.characters then
+            for charKey in pairs(snapshot.characters) do
+                local name = charKey:match("^(.+)-")
+                if name and name:lower() == lowerName then
+                    return charKey
+                end
+            end
+        end
+    end
+
+    return nil
 end
 
 -- Extract character name from "Name-Realm" key

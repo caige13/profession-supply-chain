@@ -16,6 +16,12 @@ function ns.ResourcePool.Build(optimizedRecipes)
             for _, alloc in ipairs(recipe.reagents) do
                 local baseID = alloc.baseItemID or alloc.itemID
                 local itemID = alloc.itemID
+
+                -- Skip vendor-purchasable reagents (vials, threads, etc.)
+                if ns.ItemUtil.IsVendorItem(baseID) then
+                    -- vendor item, always available, not a bottleneck
+                else
+
                 local needed = alloc.quantity * craftCount
 
                 if not pool[baseID] then
@@ -58,6 +64,8 @@ function ns.ResourcePool.Build(optimizedRecipes)
                     entry.demandedBy[#entry.demandedBy + 1] = recipe.recipeID
                     entry.demandedByNames[#entry.demandedByNames + 1] = recipe.recipeName or ("Recipe #" .. recipe.recipeID)
                 end
+
+                end -- end vendor item else
             end
         end
     end

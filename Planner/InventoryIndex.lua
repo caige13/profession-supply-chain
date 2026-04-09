@@ -105,6 +105,53 @@ function ns.InventoryIndex.GetTotalAcrossQualities(qualityItems)
     return total
 end
 
+-- Optimistically adjust inventory for items in transit via mail.
+-- Called after sending mail so the optimizer still sees the materials.
+-- The real scan will overwrite these values when the recipient logs in.
+function ns.InventoryIndex.AdjustPendingMail(itemID, charKey, quantity)
+    if not itemID or not charKey or not quantity or quantity <= 0 then return end
+
+    -- Update the character's backing inventory data (mail bucket)
+    local charData = ns.DB.localScans.characters[charKey]
+    if not charData then
+        -- Check network characters
+        for _, snapshot in pairs(ns.DB.networkSnapshots) do
+            if snapshot.characters and snapshot.characters[charKey] then
+                charData = snapshot.characters[charKey]
+                break
+            end
+        end
+    end
+
+    if charData then
+        if not charData.inventory then charData.inventory = {} end
+        if not charData.inventory[itemID] then
+            charData.inventory[itemID] = { bags = 0, bank = 0, reagentBank = 0, mail = 0, total = 0 }
+        end
+        charData.inventory[itemID].mail = (charData.inventory[itemID].mail or 0) + quantity
+        charData.inventory[itemID].total = (charData.inventory[itemID].total or 0) + quantity
+    end
+
+    -- Update the merged index directly
+    local entry = ns.DB.mergedIndex.itemTotals[itemID]
+    if not entry then
+        entry = { total = 0, byCharacter = {}, byAccount = {} }
+        ns.DB.mergedIndex.itemTotals[itemID] = entry
+    end
+    entry.total = (entry.total or 0) + quantity
+    entry.byCharacter[charKey] = (entry.byCharacter[charKey] or 0) + quantity
+
+    -- Update account total
+    local accountKey = charData and charData.accountKey
+    if accountKey then
+        if not entry.byAccount then entry.byAccount = {} end
+        entry.byAccount[accountKey] = (entry.byAccount[accountKey] or 0) + quantity
+    end
+
+    ns.Debug("InventoryIndex: optimistic mail adjust +%d %s for %s",
+        quantity, ns.ItemUtil.GetItemName(itemID), charKey)
+end
+
 -- Get per-character breakdown for a quality item set
 -- Returns: { [charKey] = { [itemID] = qty, ... }, ... }
 function ns.InventoryIndex.GetQualityByCharacter(qualityItems)

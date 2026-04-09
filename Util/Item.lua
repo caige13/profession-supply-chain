@@ -56,6 +56,83 @@ function ns.ItemUtil.GetIconString(itemID, iconSize)
     return ""
 end
 
+-- Cache for vendor item detection
+local vendorItemCache = {}
+
+-- Check if an item is a vendor-purchasable reagent (vials, threads, etc.)
+function ns.ItemUtil.IsVendorItem(itemID)
+    if not itemID then return false end
+
+    -- Check cache first
+    if vendorItemCache[itemID] ~= nil then
+        return vendorItemCache[itemID]
+    end
+
+    local classID, subclassID
+
+    -- GetItemInfoInstant is always available (no server query)
+    local infoFunc = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+    if infoFunc then
+        local ok, _, _, _, _, _, cID, scID = pcall(infoFunc, itemID)
+        if ok then
+            classID = cID
+            subclassID = scID
+        end
+    end
+
+    if not classID then
+        -- Can't determine — request cache and assume not vendor for now
+        pcall(C_Item.RequestLoadItemDataByID, itemID)
+        return false
+    end
+
+    local isVendor = false
+
+    -- Trade Goods class (7), subclass 0 = "Other/Trade Goods" — vendor reagents
+    -- Real gathering materials: Herb(9), Ore(7), Gems(4), Cloth(5), Leather(6), etc.
+    if classID == 7 and subclassID == 0 then
+        -- Generic trade good — check quality via GetItemInfo
+        local _, _, quality = C_Item.GetItemInfo(itemID)
+        if quality and quality <= 1 then
+            isVendor = true
+        elseif not quality then
+            pcall(C_Item.RequestLoadItemDataByID, itemID)
+        end
+    end
+
+    -- Consumable class (0), subclass 0 (generic) with no quality = vendor food/water
+    if classID == 0 and subclassID == 0 then
+        local _, _, quality = C_Item.GetItemInfo(itemID)
+        if quality and quality <= 1 then
+            isVendor = true
+        end
+    end
+
+    -- Name-based detection as fallback — runs regardless of class/subclass
+    -- to catch vendor reagents with unexpected classifications (e.g., Midnight items)
+    if not isVendor then
+        local name = C_Item.GetItemNameByID(itemID)
+        if name then
+            local lowerName = name:lower()
+            if lowerName:find("vial") or lowerName:find("phial$") or
+               lowerName:find("thread") or lowerName:find("flux") or
+               lowerName:find("coal") or lowerName:find("dye") or
+               lowerName:find("spool") or lowerName:find("polish") or
+               lowerName:find("solvent") or lowerName:find("bleach") then
+                isVendor = true
+            end
+        end
+    end
+
+    vendorItemCache[itemID] = isVendor
+    return isVendor
+end
+
+-- Clear vendor item cache (call if item info becomes available later)
+function ns.ItemUtil.ClearVendorCache()
+    wipe(vendorItemCache)
+end
+
 -- Get inline quality tier icon string for FontStrings: |A:atlas:h:w|a
 -- qualityID: 1, 2, or 3
 function ns.ItemUtil.GetQualityIcon(qualityID, size)

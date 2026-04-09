@@ -117,31 +117,23 @@ function ns.CraftSimPlanner.FallbackOptimize(recipeID)
     local crafters = ns.Merge.GetRecipeOwners(recipeID)
 
     -- Build reagent list from our scanner data
+    -- Store the per-craft requirement + quality variant info for the allocator
     local reagents = {}
     if recipe.reagents then
         for _, reagent in ipairs(recipe.reagents) do
-            if reagent.hasQuality and reagent.qualityTiers then
-                for _, tier in ipairs(reagent.qualityTiers) do
-                    local have = ns.InventoryIndex.GetTotal(tier.itemID)
-                    if have > 0 then
-                        reagents[#reagents + 1] = {
-                            itemID = tier.itemID,
-                            qualityID = tier.qualityID,
-                            quantity = math.min(have, reagent.quantity),
-                            baseItemID = reagent.itemID,
-                            requiredTotal = reagent.quantity,
-                        }
-                    end
-                end
-            else
-                reagents[#reagents + 1] = {
-                    itemID = reagent.itemID,
-                    qualityID = 0,
-                    quantity = reagent.quantity,
-                    baseItemID = reagent.itemID,
-                    requiredTotal = reagent.quantity,
-                }
+            -- Always add the base item with full per-craft requirement
+            local entry = {
+                itemID = reagent.itemID,
+                qualityID = 0,
+                quantity = reagent.quantity,       -- per craft requirement
+                baseItemID = reagent.itemID,
+                requiredTotal = reagent.quantity,
+            }
+            -- Include quality variant itemIDs so allocator can check all of them
+            if reagent.hasQuality and reagent.qualityItems then
+                entry.qualityItems = reagent.qualityItems
             end
+            reagents[#reagents + 1] = entry
         end
     end
 
